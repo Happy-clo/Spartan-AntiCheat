@@ -1,0 +1,90 @@
+name: Java CI with Maven
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        jdkversion: [21]
+
+    steps:
+      - uses: actions/checkout@main
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@main
+        with:
+          path: ~/.m2/repository
+          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ runner.os }}-maven-
+
+      - uses: actions/setup-java@main
+        with:
+          distribution: "temurin"
+          java-version: ${{ matrix.jdkversion }}
+          cache: "maven"
+
+      - name: Build
+        run: mvn -V -B clean package
+
+      - name: Get the repository name
+        id: get-repo-name
+        run: |
+          echo "::set-output name=repo_name::$(echo ${{ github.repository }} | cut -d'/' -f2)"
+
+      - name: Get short SHA
+        id: sha
+        run: |
+          echo "::set-output name=short_sha::$(git rev-parse --short HEAD)"
+
+      - name: Rename JAR files
+        run: |
+          # 确保 short_sha 变量已经定义并且不为空
+          short_sha=${{ steps.sha.outputs.short_sha }}
+          if [ -z "$short_sha" ]; then
+            echo "Error: short_sha is not defined or empty."
+            exit 1
+          fi
+
+          # 遍历每个子目录
+          for dir in */; do
+              # 确保目录存在
+              if [ ! -d "$dir" ]; then
+                echo "Warning: Directory $dir does not exist."
+                continue
+              fi
+
+              # 遍历每个 JAR 文件
+              for jar in $dir/target/*.jar; do
+                  # 获取文件名和扩展名
+                  filename=$(basename -- "$jar")
+                  extension="${filename##*.}"
+                  name="${filename%.*}"
+                  new_filename="${name}-${short_sha}.${extension}"
+
+                  # 重命名文件
+                  if ! mv "$jar" "$dir/target/$new_filename"; then
+                      echo "Error: Failed to rename file $jar to $new_filename"
+                  fi
+              done
+          done
+
+      - name: Upload Jar
+        uses: actions/upload-artifact@main
+        with:
+          name: ${{ steps.get-repo-name.outputs.repo_name }}
+          path: target/*.jar
+
+      - name: Automatic Release
+        uses: marvinpinto/action-automatic-releases@latest
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          automatic_release_tag: ${{ steps.sha.outputs.short_sha }}
+          prerelease: false
+          title: "${{ steps.get-repo-name.outputs.repo_name }}-${{ steps.sha.outputs.short_sha }} Release"
+          files: target/*.jar
